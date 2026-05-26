@@ -171,3 +171,47 @@ jobs:
             --body "Automated update from ${GITHUB_REPOSITORY} for image tag ${IMAGE_TAG}."
         env:
           IMAGE_TAG: ${{ needs.docker-build-push.outputs.image_tag }}
+
+  notify-slack:
+    name: Notify Slack at pipeline end
+    runs-on: ubuntu-latest
+    if: always()
+    needs:
+      - build-and-sonar
+      - docker-build-push
+      - update-helm
+    steps:
+      - name: Build Slack message payload
+        id: slack_payload
+        shell: bash
+        run: |
+          RESULTS="${{ needs.build-and-sonar.result }},${{ needs.docker-build-push.result }},${{ needs.update-helm.result }}"
+          if [[ "$RESULTS" == *"failure"* || "$RESULTS" == *"cancelled"* ]]; then
+            STATUS="FAILED"
+            ICON=":x:"
+          else
+            STATUS="SUCCEEDED"
+            ICON=":white_check_mark:"
+          fi
+
+          RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          MESSAGE="${ICON} *${GITHUB_WORKFLOW}* ${STATUS} on *${GITHUB_REF_NAME}*\nRepository: ${GITHUB_REPOSITORY}\nRun: ${RUN_URL}"
+
+          {
+            echo "payload<<EOF"
+            echo "{\"text\":\"${MESSAGE}\"}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Send Slack notification
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "SLACK_WEBHOOK_URL is not configured. Skipping Slack notification."
+            exit 0
+          fi
+
+          curl -sS -X POST -H 'Content-type: application/json' \
+            --data '${{ steps.slack_payload.outputs.payload }}' \
+            "$SLACK_WEBHOOK_URL"
